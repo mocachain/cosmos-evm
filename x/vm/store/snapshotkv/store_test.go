@@ -120,3 +120,27 @@ func TestSnapshotInvalidIndex(t *testing.T) {
 		store.RevertToSnapshot(-1)
 	})
 }
+
+func TestSnapshotBranch(t *testing.T) {
+	store := newSnapshotKV()
+	store.CurrentStore().Set([]byte("a"), []byte("1"))
+	idx := store.Snapshot()
+	store.CurrentStore().Set([]byte("b"), []byte("2"))
+
+	branch := store.Branch()
+	require.Equal(t, []byte("2"), branch.CurrentStore().Get([]byte("b")))
+	branch.CurrentStore().Set([]byte("c"), []byte("3"))
+	require.Nil(t, store.CurrentStore().Get([]byte("c")), "branch writes stay in the branch")
+
+	branch.Commit()
+	require.Equal(t, []byte("3"), store.CurrentStore().Get([]byte("c")), "commit merges into the current store")
+
+	store.RevertToSnapshot(idx)
+	require.Nil(t, store.CurrentStore().Get([]byte("c")), "the parent snapshot still covers the merged write")
+	require.Nil(t, store.CurrentStore().Get([]byte("b")))
+	require.Equal(t, []byte("1"), store.CurrentStore().Get([]byte("a")))
+
+	dropped := store.Branch()
+	dropped.CurrentStore().Set([]byte("d"), []byte("4"))
+	require.Nil(t, store.CurrentStore().Get([]byte("d")), "a dropped branch leaves the store unchanged")
+}

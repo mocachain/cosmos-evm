@@ -9,7 +9,6 @@ import (
 	"github.com/cosmos/evm/x/vm/store/types"
 	vmtypes "github.com/cosmos/evm/x/vm/types"
 
-	"cosmossdk.io/store/cachekv"
 	storetypes "cosmossdk.io/store/types"
 )
 
@@ -23,11 +22,7 @@ var _ types.SnapshotMultiStore = (*Store)(nil)
 
 // NewStore creates a new Store objectwith CacheMultiStore and KVStoreKeys
 func NewStore(cms storetypes.CacheMultiStore, keys map[string]*storetypes.KVStoreKey) *Store {
-	s := &Store{
-		stores:    make(map[storetypes.StoreKey]types.SnapshotKVStore),
-		storeKeys: vmtypes.SortedKVStoreKeys(keys),
-		head:      types.InitialHead,
-	}
+	s := newStore(vmtypes.SortedKVStoreKeys(keys))
 
 	for _, key := range s.storeKeys {
 		store := cms.GetKVStore(key).(storetypes.CacheKVStore)
@@ -35,6 +30,14 @@ func NewStore(cms storetypes.CacheMultiStore, keys map[string]*storetypes.KVStor
 	}
 
 	return s
+}
+
+func newStore(keys []*storetypes.KVStoreKey) *Store {
+	return &Store{
+		stores:    make(map[storetypes.StoreKey]types.SnapshotKVStore, len(keys)),
+		storeKeys: keys,
+		head:      types.InitialHead,
+	}
 }
 
 // NewStore creates a new Store object with KVStores
@@ -104,13 +107,9 @@ func (s *Store) CacheWrapWithTrace(_ io.Writer, _ storetypes.TraceContext) store
 // layer only, and dropping it discards them. The snapshot stack of s is left
 // untouched, so a snapshot taken before the branch can still be reverted to.
 func (s *Store) CacheMultiStore() storetypes.CacheMultiStore {
-	branch := &Store{
-		stores:    make(map[storetypes.StoreKey]types.SnapshotKVStore, len(s.storeKeys)),
-		storeKeys: s.storeKeys,
-		head:      types.InitialHead,
-	}
+	branch := newStore(s.storeKeys)
 	for _, key := range s.storeKeys {
-		branch.stores[key] = snapshotkv.NewStore(cachekv.NewStore(s.stores[key].CurrentStore()))
+		branch.stores[key] = s.stores[key].Branch()
 	}
 	return branch
 }
