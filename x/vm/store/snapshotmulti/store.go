@@ -9,6 +9,7 @@ import (
 	"github.com/cosmos/evm/x/vm/store/types"
 	vmtypes "github.com/cosmos/evm/x/vm/types"
 
+	"cosmossdk.io/store/cachekv"
 	storetypes "cosmossdk.io/store/types"
 )
 
@@ -92,16 +93,26 @@ func (s *Store) CacheWrap() storetypes.CacheWrap {
 //
 // NOTE: CacheWrapWithTrace is a method that enables a Store to satisfy the CacheWrapper interface.
 // Although it accepts an io.Writer and tracingContext as inputs, these are not used in the implementation.
-// Instead, it simply adds an additional cache layer on top of the existing KVStores.
-// As a result, while the return value differs, the behavior is effectively the same as the Snapshot() method.
+// It returns the same branch as CacheWrap.
 func (s *Store) CacheWrapWithTrace(_ io.Writer, _ storetypes.TraceContext) storetypes.CacheWrap {
 	return s.CacheWrap()
 }
 
-// CacheMultiStore snapshots store and return current store.
+// CacheMultiStore returns a new Store branched off the current top of the
+// snapshot stack, which is what sdk.Context.CacheContext() hands to code running
+// inside a precompile. Writing the branch merges its changes into the current
+// layer only, and dropping it discards them. The snapshot stack of s is left
+// untouched, so a snapshot taken before the branch can still be reverted to.
 func (s *Store) CacheMultiStore() storetypes.CacheMultiStore {
-	s.Snapshot()
-	return s
+	branch := &Store{
+		stores:    make(map[storetypes.StoreKey]types.SnapshotKVStore, len(s.storeKeys)),
+		storeKeys: s.storeKeys,
+		head:      types.InitialHead,
+	}
+	for _, key := range s.storeKeys {
+		branch.stores[key] = snapshotkv.NewStore(cachekv.NewStore(s.stores[key].CurrentStore()))
+	}
+	return branch
 }
 
 // CacheMultiStoreWithVersion load stores at a snapshot version.

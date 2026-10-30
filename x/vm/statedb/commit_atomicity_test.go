@@ -137,3 +137,45 @@ func TestCommitAtomicity(t *testing.T) {
 		require.Equal(t, uint256.NewInt(7), persisted(db, precompileAddr).Balance)
 	})
 }
+
+// TestNestedCommitInPrecompileCtxIsRevertible covers a keeper that, while a
+// precompile runs, opens its own StateDB on the precompile's cache context and
+// commits it. The EVM must still be able to revert the precompile call
+// afterwards, dropping both the precompile's and the nested StateDB's writes.
+func TestNestedCommitInPrecompileCtxIsRevertible(t *testing.T) {
+	key := storetypes.NewKVStoreKey("nested")
+	tkey := storetypes.NewTransientStoreKey("nested_t")
+	ctx := testutil.DefaultContext(key, tkey).WithEventManager(sdk.NewEventManager())
+	keeper := &atomicTestKeeper{key: key}
+	db := statedb.New(ctx, keeper, emptyTxConfig)
+
+	staged := common.BigToAddress(big.NewInt(1))
+	nestedAddr := common.BigToAddress(big.NewInt(2))
+
+	rev := db.Snapshot()
+
+	// what a precompile call sets up before running its body
+	cacheCtx, err := db.GetCacheContext()
+	require.NoError(t, err)
+	require.NoError(t, db.AddPrecompileFn(db.MultiStoreSnapshot()))
+	require.NoError(t, keeper.SetAccount(cacheCtx, staged, statedb.Account{Balance: uint256.NewInt(7)}))
+
+	// the precompile body commits a separate StateDB on its context
+	nested := statedb.New(cacheCtx, keeper, emptyTxConfig)
+	nested.AddBalance(nestedAddr, uint256.NewInt(9), tracing.BalanceChangeUnspecified)
+	require.NoError(t, nested.Commit())
+	require.Equal(t, uint256.NewInt(9), keeper.GetAccount(cacheCtx, nestedAddr).Balance)
+	// nothing reaches the transaction context before the outer StateDB commits;
+	// otherwise accounts loaded later see these writes already applied
+	require.Nil(t, keeper.GetAccount(ctx, staged))
+	require.Nil(t, keeper.GetAccount(ctx, nestedAddr))
+
+	// the call fails afterwards and the EVM reverts it
+	require.NotPanics(t, func() { db.RevertToSnapshot(rev) })
+	require.Nil(t, keeper.GetAccount(cacheCtx, staged))
+	require.Nil(t, keeper.GetAccount(cacheCtx, nestedAddr))
+
+	require.NoError(t, db.Commit())
+	require.Nil(t, keeper.GetAccount(ctx, staged))
+	require.Nil(t, keeper.GetAccount(ctx, nestedAddr))
+}
