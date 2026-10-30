@@ -57,6 +57,12 @@ func (cs *Store) Snapshot() int {
 	return len(cs.cacheStores) - 1
 }
 
+// Branch returns a new Store over a cache of the current store, so committing
+// it merges into the current store only.
+func (cs *Store) Branch() types.SnapshotKVStore {
+	return NewStore(cachekv.NewStore(cs.CurrentStore()))
+}
+
 // RevertToSnapshot pops all the cached stores
 // whose index is greator than or equal to target.
 // The target should be snapshot index returned by `Snapshot`.

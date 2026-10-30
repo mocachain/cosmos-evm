@@ -22,11 +22,7 @@ var _ types.SnapshotMultiStore = (*Store)(nil)
 
 // NewStore creates a new Store objectwith CacheMultiStore and KVStoreKeys
 func NewStore(cms storetypes.CacheMultiStore, keys map[string]*storetypes.KVStoreKey) *Store {
-	s := &Store{
-		stores:    make(map[storetypes.StoreKey]types.SnapshotKVStore),
-		storeKeys: vmtypes.SortedKVStoreKeys(keys),
-		head:      types.InitialHead,
-	}
+	s := newStore(vmtypes.SortedKVStoreKeys(keys))
 
 	for _, key := range s.storeKeys {
 		store := cms.GetKVStore(key).(storetypes.CacheKVStore)
@@ -34,6 +30,14 @@ func NewStore(cms storetypes.CacheMultiStore, keys map[string]*storetypes.KVStor
 	}
 
 	return s
+}
+
+func newStore(keys []*storetypes.KVStoreKey) *Store {
+	return &Store{
+		stores:    make(map[storetypes.StoreKey]types.SnapshotKVStore, len(keys)),
+		storeKeys: keys,
+		head:      types.InitialHead,
+	}
 }
 
 // NewStore creates a new Store object with KVStores
@@ -92,16 +96,22 @@ func (s *Store) CacheWrap() storetypes.CacheWrap {
 //
 // NOTE: CacheWrapWithTrace is a method that enables a Store to satisfy the CacheWrapper interface.
 // Although it accepts an io.Writer and tracingContext as inputs, these are not used in the implementation.
-// Instead, it simply adds an additional cache layer on top of the existing KVStores.
-// As a result, while the return value differs, the behavior is effectively the same as the Snapshot() method.
+// It returns the same branch as CacheWrap.
 func (s *Store) CacheWrapWithTrace(_ io.Writer, _ storetypes.TraceContext) storetypes.CacheWrap {
 	return s.CacheWrap()
 }
 
-// CacheMultiStore snapshots store and return current store.
+// CacheMultiStore returns a new Store branched off the current top of the
+// snapshot stack, which is what sdk.Context.CacheContext() hands to code running
+// inside a precompile. Writing the branch merges its changes into the current
+// layer only, and dropping it discards them. The snapshot stack of s is left
+// untouched, so a snapshot taken before the branch can still be reverted to.
 func (s *Store) CacheMultiStore() storetypes.CacheMultiStore {
-	s.Snapshot()
-	return s
+	branch := newStore(s.storeKeys)
+	for _, key := range s.storeKeys {
+		branch.stores[key] = s.stores[key].Branch()
+	}
+	return branch
 }
 
 // CacheMultiStoreWithVersion load stores at a snapshot version.
