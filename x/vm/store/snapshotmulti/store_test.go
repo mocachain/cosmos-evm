@@ -130,10 +130,12 @@ func TestSnapshotMultiCacheWrap(t *testing.T) {
 	snapshotStore, _ := setupStore()
 
 	wrap := snapshotStore.CacheWrap()
-	require.Equal(t, snapshotStore, wrap)
+	require.IsType(t, &snapshotmulti.Store{}, wrap)
+	require.NotSame(t, snapshotStore, wrap)
 
+	// the branch does not push onto the parent's snapshot stack
 	idx := snapshotStore.Snapshot()
-	require.Equal(t, 1, idx)
+	require.Equal(t, 0, idx)
 }
 
 func TestSnapshotMultiCacheWrapWithTrace(t *testing.T) {
@@ -142,20 +144,81 @@ func TestSnapshotMultiCacheWrapWithTrace(t *testing.T) {
 	// NOTES: CacheWrapWithTrace of snapshotmulti.Store is same with regualr CacheWrap,
 	// and arguments are not actually used.
 	wrap := snapshotStore.CacheWrapWithTrace(nil, nil)
-	require.Equal(t, snapshotStore, wrap)
+	require.IsType(t, &snapshotmulti.Store{}, wrap)
+	require.NotSame(t, snapshotStore, wrap)
 
 	idx := snapshotStore.Snapshot()
-	require.Equal(t, 1, idx)
+	require.Equal(t, 0, idx)
 }
 
 func TestSnapshotMultiCacheMultiStore(t *testing.T) {
 	snapshotStore, _ := setupStore()
 
 	m := snapshotStore.CacheMultiStore()
-	require.Equal(t, snapshotStore, m)
+	require.IsType(t, &snapshotmulti.Store{}, m)
+	require.NotSame(t, snapshotStore, m)
 
 	idx := snapshotStore.Snapshot()
-	require.Equal(t, 1, idx)
+	require.Equal(t, 0, idx)
+}
+
+// Writing a CacheMultiStore branch, as sdk.Context.CacheContext's write function
+// does, merges into the current layer only and keeps earlier snapshots revertible.
+func TestSnapshotMultiCacheMultiStoreWriteKeepsSnapshots(t *testing.T) {
+	snapshotStore, key := setupStore()
+	base := snapshotStore.GetKVStore(key)
+	base.Set([]byte("a"), []byte("1"))
+
+	idx0 := snapshotStore.Snapshot()
+	snapshotStore.GetKVStore(key).Set([]byte("b"), []byte("2"))
+
+	branch := snapshotStore.CacheMultiStore()
+	require.Equal(t, []byte("2"), branch.GetKVStore(key).Get([]byte("b")))
+	branch.GetKVStore(key).Set([]byte("c"), []byte("3"))
+	require.Nil(t, snapshotStore.GetKVStore(key).Get([]byte("c")))
+
+	branch.Write()
+	require.Equal(t, []byte("3"), snapshotStore.GetKVStore(key).Get([]byte("c")))
+	require.Nil(t, base.Get([]byte("c")))
+	require.Nil(t, base.Get([]byte("b")))
+
+	require.NotPanics(t, func() { snapshotStore.RevertToSnapshot(idx0) })
+	require.Nil(t, snapshotStore.GetKVStore(key).Get([]byte("b")))
+	require.Nil(t, snapshotStore.GetKVStore(key).Get([]byte("c")))
+	require.Equal(t, []byte("1"), snapshotStore.GetKVStore(key).Get([]byte("a")))
+}
+
+// A branch that is dropped without Write leaves the parent unchanged.
+func TestSnapshotMultiCacheMultiStoreDiscard(t *testing.T) {
+	snapshotStore, key := setupStore()
+
+	idx0 := snapshotStore.Snapshot()
+	branch := snapshotStore.CacheMultiStore()
+	branch.GetKVStore(key).Set([]byte("x"), []byte("1"))
+
+	require.Nil(t, snapshotStore.GetKVStore(key).Get([]byte("x")))
+	require.Equal(t, idx0+1, snapshotStore.Snapshot())
+}
+
+// Snapshots taken and reverted inside a branch stay inside it; writing the
+// branch then lands in the parent's current layer.
+func TestSnapshotMultiCacheMultiStoreNested(t *testing.T) {
+	snapshotStore, key := setupStore()
+
+	idx0 := snapshotStore.Snapshot()
+	branch := snapshotStore.CacheMultiStore().(*snapshotmulti.Store)
+	inner := branch.Snapshot()
+	branch.GetKVStore(key).Set([]byte("dropped"), []byte("1"))
+	branch.RevertToSnapshot(inner)
+	branch.Snapshot()
+	branch.GetKVStore(key).Set([]byte("kept"), []byte("1"))
+	branch.Write()
+
+	require.Nil(t, snapshotStore.GetKVStore(key).Get([]byte("dropped")))
+	require.Equal(t, []byte("1"), snapshotStore.GetKVStore(key).Get([]byte("kept")))
+
+	snapshotStore.RevertToSnapshot(idx0)
+	require.Nil(t, snapshotStore.GetKVStore(key).Get([]byte("kept")))
 }
 
 func TestSnapshotMultiCacheMultiStoreWithVersion(t *testing.T) {
