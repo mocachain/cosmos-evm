@@ -31,6 +31,11 @@ type SnapshotKVStore interface {
 	// Commit flushes all pending changes in the current store layer
 	// down to its parent, making them permanent.
 	Commit()
+
+	// Branch returns a new SnapshotKVStore over a cache of the current store.
+	// Committing the branch merges into the current store only; dropping it
+	// discards its changes. The receiver's snapshot stack is not touched.
+	Branch() SnapshotKVStore
 }
 
 // SnapshotMultiStore extends Snapshotter and CacheMultiStore.
