@@ -108,14 +108,17 @@ func (p Precompile) runNativeAction(evm *vm.EVM, contract *vm.Contract, action N
 	}
 
 	bz, err = action(ctx)
-	if err != nil {
-		return bz, err
-	}
 
+	// charge the gas the action used whether or not it succeeded: a failed
+	// action reverts, and a revert refunds only the gas that was not used.
 	cost := ctx.GasMeter().GasConsumed() - initialGas
 
 	if !contract.UseGas(cost, nil, tracing.GasChangeCallPrecompiledContract) {
 		return nil, vm.ErrOutOfGas
+	}
+
+	if err != nil {
+		return bz, err
 	}
 
 	if balanceHandler != nil {

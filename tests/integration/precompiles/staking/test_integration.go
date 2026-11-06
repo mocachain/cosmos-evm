@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"google.golang.org/grpc/codes"
 
@@ -428,6 +429,30 @@ func TestPrecompileIntegrationTestSuite(t *testing.T, create network.CreateEvmAp
 						logCheckArgs,
 					)
 					Expect(err).To(BeNil(), "error while calling the smart contract: %v", err)
+
+					// With an explicit gas limit the transaction is executed instead of
+					// being rejected by gas estimation. The reverted call is charged for
+					// the work its native action did, not only for the call itself.
+					input, err := s.precompile.Pack(callArgs.MethodName, callArgs.Args...)
+					Expect(err).To(BeNil(), "error while packing the call arguments: %v", err)
+					intrinsicGas, err := core.IntrinsicGas(input, nil, nil, false, true, true, true)
+					Expect(err).To(BeNil(), "error while computing the intrinsic gas: %v", err)
+					baseGas := intrinsicGas + s.precompile.RequiredGas(input)
+
+					gasLimitArgs := txArgs
+					gasLimitArgs.GasLimit = baseGas + 20_000
+					res, _, err := s.factory.CallContractAndCheckLogs(
+						delegator.Priv,
+						gasLimitArgs,
+						callArgs,
+						logCheckArgs,
+					)
+					Expect(err).To(BeNil(), "error while calling the smart contract: %v", err)
+					ethRes, err := evmtypes.DecodeTxResponse(res.Data)
+					Expect(err).To(BeNil(), "error while decoding the tx response: %v", err)
+					Expect(ethRes.VmError).To(Equal(vm.ErrExecutionReverted.Error()), "expected the call to revert")
+					Expect(ethRes.GasUsed).To(BeNumerically(">", baseGas),
+						"expected the reverted call to be charged for its native work")
 				})
 			})
 
